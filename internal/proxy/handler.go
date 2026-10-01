@@ -779,8 +779,28 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 
-				// If thought signature error persists or cross-model error occurred, trigger failover/rotation
-				if isThoughtSigErr || currentModel != origModel {
+				if isThoughtSigErr && CategorizeModel(currentModel) == CategoryClaudeGPT {
+					// Attempt in-flight sanitization by stripping thought blocks and invalid signatures
+					if sanitized, sErr := SanitizeClaudeSignatures(currentBody); sErr == nil && !bytes.Equal(sanitized, currentBody) {
+						_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512*1024))
+						_ = resp.Body.Close()
+						currentBody = sanitized
+						buffered = &BufferedRequest{Body: currentBody}
+						SynchronizeRequest(r, currentBody, currentPath, currentQuery)
+						if h.eventBroadcaster != nil {
+							h.eventBroadcaster.Broadcast(&domain.ProxyEvent{
+								Type:      domain.EventTypeModelFallback,
+								AccountID: currentAcc.ID,
+								Message:   fmt.Sprintf("Sanitized Claude thought signatures after 400 error on %s", currentModel),
+								Timestamp: time.Now().UTC(),
+							})
+						}
+						continue // Retry upstream with sanitized payload
+					}
+				}
+
+				// Only trigger account failover/rotation if cross-model error occurred
+				if currentModel != origModel {
 					isExhausted = true
 				}
 			} else if resp.StatusCode == http.StatusForbidden {
