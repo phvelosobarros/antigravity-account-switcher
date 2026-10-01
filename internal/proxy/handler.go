@@ -43,18 +43,18 @@ func (f TokenRefresherFunc) RefreshToken(ctx context.Context, refreshToken strin
 
 // Config holds configuration parameters for the reverse proxy.
 type Config struct {
-	TargetURL         string
-	MaxRetries        int
-	maxRetriesSet     bool
-	MaxBodyBytes      int64
-	HTTPClient        *http.Client
-	TokenExpiryMargin time.Duration
-	TokenRefresher    TokenRefresher
-	MetricsRepo       domain.MetricsRepository
-	EventBroadcaster  domain.EventBroadcaster
-	EventRepo         domain.EventRepository
-	FailoverEngine    *FailoverEngine
-	QuotaRepo         domain.QuotaRepository
+	TargetURL            string
+	MaxRetries           int
+	maxRetriesSet        bool
+	MaxBodyBytes         int64
+	HTTPClient           *http.Client
+	TokenExpiryMargin    time.Duration
+	TokenRefresher       TokenRefresher
+	MetricsRepo          domain.MetricsRepository
+	EventBroadcaster     domain.EventBroadcaster
+	EventRepo            domain.EventRepository
+	FailoverEngine       *FailoverEngine
+	QuotaRepo            domain.QuotaRepository
 	QuotaSwitchThreshold float64
 }
 
@@ -578,14 +578,15 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	currentQuery := origQuery
 	currentBody := origBody
 
-	// Force primary model configured in the dashboard (source of truth) unless client already requests secondary
+	// Force primary model configured in the dashboard (source of truth) only when fallback is enabled
 	if isCloudCode && !isPassThrough && h.failoverEngine != nil {
 		h.failoverEngine.mu.RLock()
 		primary := h.failoverEngine.modelPrimary
 		secondary := h.failoverEngine.modelSecondary
+		enabled := h.failoverEngine.fallbackSecondaryEnabled
 		h.failoverEngine.mu.RUnlock()
 
-		if primary != "" && origModel != "" &&
+		if enabled && primary != "" && origModel != "" &&
 			NormalizeModelName(origModel) != NormalizeModelName(primary) &&
 			(secondary == "" || NormalizeModelName(origModel) != NormalizeModelName(secondary)) {
 			buffered = h.rewriteRequestModel(r, buffered, primary)
