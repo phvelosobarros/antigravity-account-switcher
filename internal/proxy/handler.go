@@ -527,6 +527,17 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var currentAcc *domain.Account
 	isPassThrough := false
 
+	// 2. Capture original request baseline early so quota checks can be model-aware
+	origModel, _, _ := ExtractModelFromRequest(r, buffered.Bytes())
+	origPath := r.URL.Path
+	origQuery := r.URL.RawQuery
+	origBody := buffered.Bytes()
+
+	currentModel := origModel
+	currentPath := origPath
+	currentQuery := origQuery
+	currentBody := origBody
+
 	if isCloudCode {
 		// Resolve active account from repository
 		acc, accErr := h.accountRepo.GetActive(ctx)
@@ -551,11 +562,16 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			currentAcc = acc
 		}
 
-		// Proactive quota threshold check (e.g. >= 85% usage switch)
-		if currentAcc != nil && h.cfg.QuotaRepo != nil && h.cfg.QuotaSwitchThreshold > 0 && h.failoverEngine != nil {
+		// Model-aware proactive quota threshold check (e.g. >= 85% usage switch)
+		if currentAcc != nil && h.cfg.QuotaRepo != nil && h.cfg.QuotaSwitchThreshold > 0 && h.failoverEngine != nil && origModel != "" {
+			reqCat := CategorizeModel(origModel)
 			buckets, _ := h.cfg.QuotaRepo.GetByAccountID(ctx, currentAcc.ID)
 			for _, b := range buckets {
-				if b != nil && b.IsUsageAboveThreshold(h.cfg.QuotaSwitchThreshold) {
+				if b == nil {
+					continue
+				}
+				// Only trigger rotation if the bucket matches the requested model family
+				if (reqCat == CategoryUnknown || MatchesBucket(b, reqCat)) && b.IsUsageAboveThreshold(h.cfg.QuotaSwitchThreshold) {
 					if rotated, err := h.failoverEngine.RotateProactively(ctx, currentAcc, b.UsageFraction()); err == nil && rotated != nil {
 						currentAcc = rotated
 					}
@@ -566,17 +582,6 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		isPassThrough = true
 	}
-
-	// 2. Capture original request baseline
-	origModel, _, _ := ExtractModelFromRequest(r, buffered.Bytes())
-	origPath := r.URL.Path
-	origQuery := r.URL.RawQuery
-	origBody := buffered.Bytes()
-
-	currentModel := origModel
-	currentPath := origPath
-	currentQuery := origQuery
-	currentBody := origBody
 
 	// Force primary model configured in the dashboard (source of truth) only when fallback is enabled
 	if isCloudCode && !isPassThrough && h.failoverEngine != nil {
